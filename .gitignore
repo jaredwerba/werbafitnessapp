@@ -1,0 +1,26 @@
+# dependencies
+node_modules/
+
+# local env and secrets
+.env
+.env.local
+.env.*.local
+
+# user data — never publish (session key, VAPID, per-user state)
+data/secret
+data/vapid.json
+data/db.json
+data/state-*.json
+data/*.tmp
+
+# exercise media (~140 MB); fetch with ./scripts/fetch-media.sh
+media/img/
+media/gif/
+
+# build output
+frontend/dist/
+.vercel
+
+# OS / editor
+.DS_Store
+*.log
