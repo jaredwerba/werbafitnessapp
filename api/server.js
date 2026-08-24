@@ -1,64 +1,102 @@
 /* opengym-api — passkey (WebAuthn) auth + per-user state storage for openGym
-   No framework, JSON-file storage, signed session cookies.               */
+   No framework. JSON storage (filesystem locally, Vercel Blob on Vercel). */
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
 import {
   generateRegistrationOptions, verifyRegistrationResponse,
   generateAuthenticationOptions, verifyAuthenticationResponse
 } from '@simplewebauthn/server';
 import webpush from 'web-push';
+import { put as blobPut, get as blobGet } from '@vercel/blob';
 
 const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
-const RP_ID = process.env.RP_ID || 'localhost';
-const ORIGIN = process.env.ORIGIN || 'http://localhost:8080';
+const RP_ID = process.env.RP_ID || process.env.VERCEL_PROJECT_PRODUCTION_URL || 'localhost';
+const ORIGIN = process.env.ORIGIN || (process.env.VERCEL_PROJECT_PRODUCTION_URL
+  ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+  : 'http://localhost:8080');
 const RP_NAME = process.env.RP_NAME || 'openGym';
-// Admin dashboard (issue): admins are matched by uid; INVITE_ONLY gates new signups behind a
-// code the admin generates. Both default off so a fresh self-hosted instance stays open.
 const ADMIN_UIDS = (process.env.ADMIN_UIDS || '').split(',').map(s => s.trim()).filter(Boolean);
 const INVITE_ONLY = /^(1|true|yes|on)$/i.test(process.env.INVITE_ONLY || '');
-// 90 days keeps someone who trains a few times a week permanently signed in without a stolen
-// cookie staying good for a year. Overridable because a family instance and one on the open
-// internet don't want the same number. Only affects cookies minted from now on — the expiry is
-// baked into each cookie when it's issued, so lowering this never cuts an existing session short.
 const SESSION_DAYS = Math.max(1, +(process.env.SESSION_DAYS || 90) || 90);
 const MAX_BODY = 5 * 1024 * 1024;
-// Secure cookies require HTTPS; over plain http://localhost the flag would drop the cookie
 const SECURE = /^https:/i.test(ORIGIN) ? ' Secure;' : '';
+const useBlob = !!(process.env.BLOB_READ_WRITE_TOKEN || process.env.BLOB_STORE_ID);
 
-fs.mkdirSync(DATA, { recursive: true });
+if (!useBlob) fs.mkdirSync(DATA, { recursive: true });
 
-/* ---------- secret + db ---------- */
-const secretFile = path.join(DATA, 'secret');
-if (!fs.existsSync(secretFile)) fs.writeFileSync(secretFile, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
-const SECRET = fs.readFileSync(secretFile, 'utf8').trim();
+async function readText(name) {
+  if (useBlob) {
+    const result = await blobGet(name, { access: 'private', useCache: false });
+    if (!result?.stream) return null;
+    return await new Response(result.stream).text();
+  }
+  try { return await fsp.readFile(path.join(DATA, name), 'utf8'); }
+  catch { return null; }
+}
 
-const dbFile = path.join(DATA, 'db.json');
-let db = { users: [], creds: [], subs: [], invites: [] };
-try { db = JSON.parse(fs.readFileSync(dbFile, 'utf8')); } catch {}
-db.subs = db.subs || [];
-db.invites = db.invites || [];
-const isAdmin = user => !!user && (user.admin === true || ADMIN_UIDS.includes(user.id));
-function saveDb() { atomicWrite(dbFile, JSON.stringify(db, null, 2)); }
-function atomicWrite(file, content) {
+async function writeText(name, content) {
+  if (useBlob) {
+    await blobPut(name, content, {
+      access: 'private',
+      allowOverwrite: true,
+      addRandomSuffix: false,
+      contentType: 'application/json',
+      cacheControlMaxAge: 60
+    });
+    return;
+  }
+  const file = path.join(DATA, name);
   const tmp = file + '.tmp';
-  fs.writeFileSync(tmp, content);
-  fs.renameSync(tmp, file);
-}
-const stateFile = uid => path.join(DATA, 'state-' + uid.replace(/[^a-zA-Z0-9_-]/g, '') + '.json');
-function readState(uid) {
-  try { return JSON.parse(fs.readFileSync(stateFile(uid), 'utf8')); } catch { return null; }
+  await fsp.writeFile(tmp, content);
+  await fsp.rename(tmp, file);
 }
 
-/* ---------- push notifications (Web Push / VAPID) ---------- */
-const vapidFile = path.join(DATA, 'vapid.json');
+let SECRET;
+let db = { users: [], creds: [], subs: [], invites: [] };
 let vapid;
-try { vapid = JSON.parse(fs.readFileSync(vapidFile, 'utf8')); }
-catch { vapid = webpush.generateVAPIDKeys(); fs.writeFileSync(vapidFile, JSON.stringify(vapid), { mode: 0o600 }); }
-const VAPID_SUBJECT = process.env.VAPID_SUBJECT || (SECURE ? ORIGIN : 'mailto:admin@localhost');
-webpush.setVapidDetails(VAPID_SUBJECT, vapid.publicKey, vapid.privateKey);
+let ready = false;
+
+async function ensureInit() {
+  if (ready) return;
+  SECRET = (process.env.AUTH_SECRET || '').trim();
+  if (!SECRET) {
+    const existing = await readText('secret');
+    if (existing) SECRET = existing.trim();
+    else {
+      SECRET = crypto.randomBytes(32).toString('hex');
+      await writeText('secret', SECRET);
+    }
+  }
+  try {
+    const raw = await readText('db.json');
+    if (raw) db = JSON.parse(raw);
+  } catch {}
+  db.subs = db.subs || [];
+  db.invites = db.invites || [];
+  const vapidRaw = await readText('vapid.json');
+  try { vapid = vapidRaw ? JSON.parse(vapidRaw) : null; } catch { vapid = null; }
+  if (!vapid?.publicKey || !vapid?.privateKey) {
+    vapid = webpush.generateVAPIDKeys();
+    await writeText('vapid.json', JSON.stringify(vapid));
+  }
+  const VAPID_SUBJECT = process.env.VAPID_SUBJECT || (SECURE ? ORIGIN : 'mailto:admin@localhost');
+  webpush.setVapidDetails(VAPID_SUBJECT, vapid.publicKey, vapid.privateKey);
+  ready = true;
+}
+
+const isAdmin = user => !!user && (user.admin === true || ADMIN_UIDS.includes(user.id));
+async function saveDb() { await writeText('db.json', JSON.stringify(db, null, 2)); }
+const stateKey = uid => 'state-' + String(uid).replace(/[^a-zA-Z0-9_-]/g, '') + '.json';
+async function readState(uid) {
+  try {
+    const raw = await readText(stateKey(uid));
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
 
 async function sendPush(userId, payload) {
   const subs = db.subs.filter(s => s.userId === userId);
@@ -66,11 +104,6 @@ async function sendPush(userId, payload) {
   const body = JSON.stringify(payload);
   let dirty = false;
   await Promise.all(subs.map(async sub => {
-    // urgency 'high' is the one lever we have over delivery speed — iOS/Android throttle
-    // low-urgency background push more aggressively under battery-saving modes. TTL is left
-    // at the library default (long) so a briefly-offline device still gets it once reconnected,
-    // rather than risking it being dropped for the sake of shaving off latency that TTL doesn't
-    // actually control anyway.
     try { await webpush.sendNotification({ endpoint: sub.endpoint, keys: sub.keys }, body, { urgency: 'high' }); }
     catch (e) {
       console.error('push send failed', userId, e.statusCode, e.body || e.message);
@@ -79,12 +112,10 @@ async function sendPush(userId, payload) {
       }
     }
   }));
-  if (dirty) saveDb();
+  if (dirty) await saveDb();
 }
 
-// Rest-timer alerts: client schedules on start/extend, cancels on skip or on-screen completion —
-// this only fires when the tab was backgrounded/suspended and never got to cancel it itself.
-const restTimers = new Map(); // userId -> Timeout
+const restTimers = new Map();
 function scheduleRestTimer(userId, sec) {
   const t = restTimers.get(userId);
   if (t) clearTimeout(t);
@@ -98,8 +129,6 @@ function cancelRestTimer(userId) {
   if (t) { clearTimeout(t); restTimers.delete(userId); }
 }
 
-// "Workout planned today" reminder — one per user per day, at their chosen time.
-// Duplicated (not imported) from frontend/src/lib/history.js effectiveRoutineId — tiny pure helper, not worth sharing across the two runtimes.
 function effectiveRoutineId(S, iso) {
   const ov = S.dayPlan?.[iso];
   if (ov === 'rest') return null;
@@ -107,8 +136,6 @@ function effectiveRoutineId(S, iso) {
   const wd = new Date(iso + 'T12:00:00').getDay();
   return S.week?.[wd] || null;
 }
-// Computes "now" in an arbitrary IANA zone (e.g. "Europe/Lisbon") instead of the server's own —
-// each user's reminder fires by their own clock, wherever they and their phone actually are.
 function userNow(tz) {
   try {
     const parts = new Intl.DateTimeFormat('en-CA', {
@@ -117,40 +144,43 @@ function userNow(tz) {
     }).formatToParts(new Date());
     const g = t => parts.find(p => p.type === t)?.value;
     return { date: `${g('year')}-${g('month')}-${g('day')}`, hhmm: `${g('hour')}:${g('minute')}` };
-  } catch { return null; } // unknown/invalid tz string — skip this user rather than guess
+  } catch { return null; }
 }
-setInterval(() => {
-  for (const user of db.users) {
-    if (!db.subs.some(s => s.userId === user.id)) continue;
-    const S = readState(user.id);
-    if (!S?.reminder?.on) continue;
-    const now = userNow(S.reminder.tz || 'UTC');
-    if (!now || S.reminder.time !== now.hhmm) continue;
-    if (user.lastReminder === now.date) continue;
-    if ((S.workouts || []).some(w => w.d === now.date)) continue;
-    const rid = effectiveRoutineId(S, now.date);
-    if (!rid) continue; // rest day — nothing planned
-    const routine = (S.routines || []).find(r => r.id === rid);
-    console.log('reminder firing', user.id, rid);
-    user.lastReminder = now.date;
-    saveDb();
-    sendPush(user.id, {
-      title: routine ? `${routine.emoji || '🏋️'} ${routine.name} today` : 'Workout planned today',
-      body: "It's on your plan — let's go 💪",
-      tag: 'day-reminder'
-    });
-  }
-// Checked every 10s (not 60s) — ticks aren't aligned to the top of the minute, so a 60s
-// interval could sit on your target minute for up to 59s before noticing. 10s caps that at ~9s.
-}, 10000).unref();
 
-/* ---------- sessions (signed cookie) ---------- */
+if (!process.env.VERCEL) {
+  setInterval(async () => {
+    try {
+      await ensureInit();
+      for (const user of db.users) {
+        if (!db.subs.some(s => s.userId === user.id)) continue;
+        const S = await readState(user.id);
+        if (!S?.reminder?.on) continue;
+        const now = userNow(S.reminder.tz || 'UTC');
+        if (!now || S.reminder.time !== now.hhmm) continue;
+        if (user.lastReminder === now.date) continue;
+        if ((S.workouts || []).some(w => w.d === now.date)) continue;
+        const rid = effectiveRoutineId(S, now.date);
+        if (!rid) continue;
+        const routine = (S.routines || []).find(r => r.id === rid);
+        console.log('reminder firing', user.id, rid);
+        user.lastReminder = now.date;
+        await saveDb();
+        sendPush(user.id, {
+          title: routine ? `${routine.emoji || '🏋️'} ${routine.name} today` : 'Workout planned today',
+          body: "It's on your plan — let's go 💪",
+          tag: 'day-reminder'
+        });
+      }
+    } catch (e) { console.error('reminder tick', e); }
+  }, 10000).unref();
+}
+
 function sign(payload) {
   const mac = crypto.createHmac('sha256', SECRET).update(payload).digest('base64url');
   return payload + '.' + mac;
 }
 function verifySig(token) {
-  const i = token.lastIndexOf('.');
+  const i = String(token || '').lastIndexOf('.');
   if (i < 0) return null;
   const payload = token.slice(0, i), mac = token.slice(i + 1);
   const expect = crypto.createHmac('sha256', SECRET).update(payload).digest('base64url');
@@ -159,11 +189,6 @@ function verifySig(token) {
   } catch { return null; }
   return payload;
 }
-// Session payload is `<uid>:<expiry>:<version>`, where the version is the user's `sv` counter.
-// Bumping `sv` (POST /api/logout/all) makes every cookie ever handed out for that account stop
-// verifying, which is the only revocation there was before short of deleting ./data/secret and
-// signing out the whole instance. Cookies minted before `sv` existed have no third field and are
-// read as version 0, matching a user who has never bumped — they stay valid until they expire.
 const sessionVersion = user => user.sv || 0;
 function makeSession(user) {
   const exp = Date.now() + SESSION_DAYS * 86400000;
@@ -181,14 +206,11 @@ function readSession(req) {
   if (!uid || +exp < Date.now()) return null;
   const user = db.users.find(u => u.id === uid) || null;
   if (!user) return null;
-  if (user.disabled) return null;           // disabled accounts are locked out everywhere
-  // Missing third field = pre-versioning cookie = version 0. Anything non-numeric is a malformed
-  // payload (it still had to pass the HMAC, so this is belt-and-braces) and is refused outright.
+  if (user.disabled) return null;
   const claimed = ver === undefined ? 0 : Number(ver);
   if (!Number.isInteger(claimed) || claimed !== sessionVersion(user)) return null;
   return user;
 }
-// Guard for /api/admin/* — resolves the caller and 401/403s if they aren't an admin.
 function requireAdmin(req, res) {
   const user = readSession(req);
   if (!user) { json(res, 401, { error: 'not signed in' }); return null; }
@@ -200,28 +222,37 @@ function sessionCookie(user) {
 }
 const clearCookie = `gymsid=; Path=/; Max-Age=0; HttpOnly;${SECURE} SameSite=Lax`;
 
-/* ---------- challenge store (in-memory, 5 min TTL) ---------- */
-const challenges = new Map(); // cid -> {challenge, name?, uid?, exp}
 function putChallenge(data) {
-  const cid = crypto.randomBytes(16).toString('base64url');
-  challenges.set(cid, { ...data, exp: Date.now() + 5 * 60000 });
-  return cid;
+  const payload = Buffer.from(JSON.stringify({ ...data, exp: Date.now() + 5 * 60000 })).toString('base64url');
+  return sign(payload);
 }
 function takeChallenge(cid) {
-  const c = challenges.get(cid);
-  challenges.delete(cid);
-  if (!c || c.exp < Date.now()) return null;
-  return c;
+  const payload = verifySig(cid);
+  if (!payload) return null;
+  try {
+    const c = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (!c || c.exp < Date.now()) return null;
+    return c;
+  } catch { return null; }
 }
-setInterval(() => { for (const [k, v] of challenges) if (v.exp < Date.now()) challenges.delete(k); }, 60000).unref();
 
-/* ---------- helpers ---------- */
 function json(res, code, obj, extraHeaders) {
   const body = JSON.stringify(obj);
   res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...(extraHeaders || {}) });
   res.end(body);
 }
 function readBody(req) {
+  if (req.body != null && req.body !== '') {
+    if (Buffer.isBuffer(req.body)) {
+      try { return Promise.resolve(JSON.parse(req.body.toString('utf8') || '{}')); }
+      catch { return Promise.reject(new Error('bad json')); }
+    }
+    if (typeof req.body === 'string') {
+      try { return Promise.resolve(req.body ? JSON.parse(req.body) : {}); }
+      catch { return Promise.reject(new Error('bad json')); }
+    }
+    if (typeof req.body === 'object') return Promise.resolve(req.body);
+  }
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
     req.on('data', d => {
@@ -238,24 +269,21 @@ function readBody(req) {
 }
 const b64uToBuf = s => Buffer.from(s, 'base64url');
 
-/* ---------- live presence (in-memory) ---------- */
-// Clients heartbeat /api/activity while a workout is on screen; the admin dashboard reads who's
-// live. Purely ephemeral — never persisted. Expires shortly after the last ping.
-const presence = new Map();               // uid -> { name, exIdx, exTotal, setsDone, setsTotal, startedAt, updatedAt }
-const PRESENCE_TTL = 70000;               // ~3.5× the 20s client heartbeat
+const presence = new Map();
+const PRESENCE_TTL = 70000;
 function livePresence(uid) {
   const p = presence.get(uid);
   if (!p) return null;
   if (Date.now() - p.updatedAt > PRESENCE_TTL) { presence.delete(uid); return null; }
   return p;
 }
-setInterval(() => { for (const [k, v] of presence) if (Date.now() - v.updatedAt > PRESENCE_TTL) presence.delete(k); }, 30000).unref();
+if (!process.env.VERCEL) {
+  setInterval(() => { for (const [k, v] of presence) if (Date.now() - v.updatedAt > PRESENCE_TTL) presence.delete(k); }, 30000).unref();
+}
 
-/* ---------- routes ---------- */
 const routes = {
   'GET /api/health': async (req, res) => json(res, 200, { ok: true, users: db.users.length }),
 
-  // Public config the login screen needs before anyone is signed in.
   'GET /api/config': async (req, res) => json(res, 200, { invite_only: INVITE_ONLY }),
 
   'GET /api/me': async (req, res) => {
@@ -300,7 +328,6 @@ const routes = {
     if (!verification.verified) return json(res, 400, { error: 'not verified' });
     const { credential } = verification.registrationInfo;
     if (db.creds.find(x => x.id === credential.id)) return json(res, 409, { error: 'credential already registered' });
-    // Re-check the invite at the last moment (it may have been used/revoked since options), then burn it.
     let invite = null;
     if (INVITE_ONLY) {
       invite = db.invites.find(i => i.code === c.code && !i.usedBy && !i.revoked);
@@ -315,7 +342,7 @@ const routes = {
       counter: credential.counter || 0,
       transports: body.credential?.response?.transports || []
     });
-    saveDb();
+    await saveDb();
     json(res, 200, { user: { id: user.id, name: user.name, admin: isAdmin(user) } }, { 'Set-Cookie': sessionCookie(user) });
   },
 
@@ -351,7 +378,7 @@ const routes = {
     } catch (e) { return json(res, 400, { error: 'verification failed: ' + e.message }); }
     if (!verification.verified) return json(res, 400, { error: 'not verified' });
     cred.counter = verification.authenticationInfo.newCounter;
-    saveDb();
+    await saveDb();
     const user = db.users.find(u => u.id === cred.userId);
     if (!user) return json(res, 500, { error: 'user missing' });
     if (user.disabled) return json(res, 403, { error: 'this account has been disabled' });
@@ -360,25 +387,18 @@ const routes = {
 
   'POST /api/logout': async (req, res) => json(res, 200, { ok: true }, { 'Set-Cookie': clearCookie }),
 
-  // "Sign out everywhere" — bumps this user's session version, which invalidates every cookie
-  // ever issued for the account, on every device, including a copy someone else walked off with.
-  // The caller's own cookie is cleared here too, so the browser doing it doesn't sit on a token
-  // it no longer accepts. Passkeys are untouched: signing back in works immediately.
   'POST /api/logout/all': async (req, res) => {
     const user = readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     user.sv = sessionVersion(user) + 1;
-    saveDb();
+    await saveDb();
     json(res, 200, { ok: true }, { 'Set-Cookie': clearCookie });
   },
 
   'GET /api/data': async (req, res) => {
     const user = readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
-    try {
-      const state = JSON.parse(fs.readFileSync(stateFile(user.id), 'utf8'));
-      json(res, 200, { state });
-    } catch { json(res, 200, { state: null }); }
+    json(res, 200, { state: await readState(user.id) });
   },
 
   'PUT /api/data': async (req, res) => {
@@ -386,8 +406,8 @@ const routes = {
     if (!user) return json(res, 401, { error: 'not signed in' });
     const body = await readBody(req);
     if (!body.state || typeof body.state !== 'object') return json(res, 400, { error: 'state required' });
-    delete body.state.active;              // in-progress workouts stay device-local
-    atomicWrite(stateFile(user.id), JSON.stringify(body.state));
+    delete body.state.active;
+    await writeText(stateKey(user.id), JSON.stringify(body.state));
     json(res, 200, { ok: true, ts: body.state._ts || null });
   },
 
@@ -401,7 +421,7 @@ const routes = {
     if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) return json(res, 400, { error: 'invalid subscription' });
     db.subs = db.subs.filter(s => s.endpoint !== sub.endpoint);
     db.subs.push({ userId: user.id, endpoint: sub.endpoint, keys: sub.keys, created: new Date().toISOString() });
-    saveDb();
+    await saveDb();
     json(res, 200, { ok: true });
   },
 
@@ -410,7 +430,7 @@ const routes = {
     if (!user) return json(res, 401, { error: 'not signed in' });
     const body = await readBody(req);
     db.subs = db.subs.filter(s => !(s.userId === user.id && s.endpoint === body.endpoint));
-    saveDb();
+    await saveDb();
     json(res, 200, { ok: true });
   },
 
@@ -438,7 +458,6 @@ const routes = {
     json(res, 200, { ok: true });
   },
 
-  // Live-workout heartbeat: client pings while a workout is on screen; { active:false } drops it.
   'POST /api/activity': async (req, res) => {
     const user = readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
@@ -455,12 +474,10 @@ const routes = {
     json(res, 200, { ok: true });
   },
 
-  /* ---------- admin dashboard ---------- */
-  // One row per user, cheap enough for a personal instance (reads each state file once).
   'GET /api/admin/users': async (req, res) => {
     if (!requireAdmin(req, res)) return;
-    const users = db.users.map(u => {
-      const S = readState(u.id) || {};
+    const users = await Promise.all(db.users.map(async u => {
+      const S = await readState(u.id) || {};
       const workouts = S.workouts || [];
       const last = workouts[workouts.length - 1];
       return {
@@ -472,24 +489,23 @@ const routes = {
         hasPush: db.subs.some(s => s.userId === u.id),
         live: livePresence(u.id)
       };
-    });
+    }));
     json(res, 200, { users, invite_only: INVITE_ONLY, now: Date.now() });
   },
 
-  // Drill-down: full workout history + body-weight log for one user.
   'GET /api/admin/user': async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const id = new URL(req.url, 'http://x').searchParams.get('id');
     const u = db.users.find(x => x.id === id);
     if (!u) return json(res, 404, { error: 'no such user' });
-    const S = readState(u.id) || {};
+    const S = await readState(u.id) || {};
     json(res, 200, {
       user: { id: u.id, name: u.name, created: u.created || null, disabled: !!u.disabled, admin: isAdmin(u), invitedBy: u.invitedBy || null },
       unit: S.unit || 'kg',
       lastSync: S._ts || null,
       routines: (S.routines || []).map(r => ({ id: r.id, name: r.name, emoji: r.emoji, count: (r.ex || []).length })),
       bodyweight: S.bodyweight || [],
-      workouts: (S.workouts || []).slice().reverse()   // newest first for display
+      workouts: (S.workouts || []).slice().reverse()
     });
   },
 
@@ -500,14 +516,13 @@ const routes = {
     if (!u) return json(res, 404, { error: 'no such user' });
     if (isAdmin(u)) return json(res, 400, { error: 'cannot disable an admin' });
     u.disabled = !!body.disabled;
-    if (u.disabled) presence.delete(u.id);   // drop them off "training now" at once
-    saveDb();
+    if (u.disabled) presence.delete(u.id);
+    await saveDb();
     json(res, 200, { ok: true, id: u.id, disabled: u.disabled });
   },
 
   'GET /api/admin/invites': async (req, res) => {
     if (!requireAdmin(req, res)) return;
-    // resolve usedBy uid → name for display
     const invites = db.invites.map(i => ({
       ...i, usedByName: i.usedBy ? (db.users.find(u => u.id === i.usedBy) || {}).name || null : null
     }));
@@ -518,14 +533,10 @@ const routes = {
     const admin = requireAdmin(req, res); if (!admin) return;
     const body = await readBody(req);
     let code;
-    // 16 hex chars = 64 bits, up from 8 chars / 32 bits. The app has no rate limiting by design
-    // (that's the reverse proxy's job) and /api/register/options tells a caller whether a code is
-    // good, so the code itself has to be the thing that isn't worth guessing. Codes already in
-    // db.json keep working — validation is an exact string compare, never a length or format check.
     do { code = crypto.randomBytes(8).toString('hex').toUpperCase(); } while (db.invites.some(i => i.code === code));
     const invite = { code, note: String(body.note || '').slice(0, 60), createdBy: admin.id, created: new Date().toISOString() };
     db.invites.push(invite);
-    saveDb();
+    await saveDb();
     json(res, 200, { invite });
   },
 
@@ -536,12 +547,18 @@ const routes = {
     if (!inv) return json(res, 404, { error: 'no such code' });
     if (inv.usedBy) return json(res, 400, { error: 'already used — cannot revoke' });
     db.invites = db.invites.filter(i => i.code !== inv.code);
-    saveDb();
+    await saveDb();
     json(res, 200, { ok: true });
   }
 };
 
-http.createServer(async (req, res) => {
+export default async function handleRequest(req, res) {
+  try {
+    await ensureInit();
+  } catch (e) {
+    console.error('init', e);
+    return json(res, 500, { error: 'server error' });
+  }
   const url = new URL(req.url, 'http://x');
   const key = req.method + ' ' + url.pathname;
   const handler = routes[key];
@@ -551,4 +568,10 @@ http.createServer(async (req, res) => {
     console.error(key, e);
     if (!res.headersSent) json(res, 500, { error: 'server error' });
   }
-}).listen(PORT, () => console.log(`gym-api on :${PORT} (rpID=${RP_ID}, origin=${ORIGIN})`));
+}
+
+if (!process.env.VERCEL) {
+  http.createServer(handleRequest).listen(PORT, () =>
+    console.log(`gym-api on :${PORT} (rpID=${RP_ID}, origin=${ORIGIN})`)
+  );
+}
