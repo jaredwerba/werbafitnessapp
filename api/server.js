@@ -560,7 +560,11 @@ export default async function handleRequest(req, res) {
     return json(res, 500, { error: 'server error' });
   }
   const url = new URL(req.url, 'http://x');
-  const key = req.method + ' ' + url.pathname;
+  const forwarded = url.searchParams.get('p');
+  const pathname = forwarded
+    ? (forwarded.startsWith('/api/') ? forwarded : '/api/' + forwarded.replace(/^\/+/, ''))
+    : url.pathname;
+  const key = req.method + ' ' + pathname;
   const handler = routes[key];
   if (!handler) return json(res, 404, { error: 'not found' });
   try { await handler(req, res); }

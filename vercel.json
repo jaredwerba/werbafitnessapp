@@ -5,12 +5,13 @@
   "buildCommand": "npm run build --prefix frontend",
   "outputDirectory": "frontend/dist",
   "functions": {
-    "api/[...slug].js": {
+    "api/index.js": {
       "maxDuration": 30,
       "includeFiles": "api/**"
     }
   },
   "rewrites": [
+    { "source": "/api/(.+)", "destination": "/api?p=$1" },
     { "source": "/((?!api(?:/|$)|assets/).*)", "destination": "/index.html" }
   ]
 }
