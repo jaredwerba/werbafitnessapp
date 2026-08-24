@@ -11,7 +11,10 @@
     }
   },
   "rewrites": [
+    { "source": "/train/api/(.+)", "destination": "/api?p=$1" },
     { "source": "/api/(.+)", "destination": "/api?p=$1" },
+    { "source": "/train", "destination": "/index.html" },
+    { "source": "/train/(.*)", "destination": "/$1" },
     { "source": "/((?!api(?:/|$)|assets/).*)", "destination": "/index.html" }
   ]
 }

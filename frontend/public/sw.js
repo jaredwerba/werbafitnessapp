@@ -29,7 +29,7 @@ self.addEventListener('notificationclick', e => {
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url)
   if (e.request.method !== 'GET' || url.origin !== location.origin) return
-  if (url.pathname.startsWith('/api/')) return    // never cache auth/data
+  if (url.pathname.includes('/api/')) return    // never cache auth/data
 
   const isMedia = url.pathname.includes('/img/') || url.pathname.includes('/gif/')
   if (isMedia) {

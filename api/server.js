@@ -18,6 +18,7 @@ const RP_ID = process.env.RP_ID || process.env.VERCEL_PROJECT_PRODUCTION_URL || 
 const ORIGIN = process.env.ORIGIN || (process.env.VERCEL_PROJECT_PRODUCTION_URL
   ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
   : 'http://localhost:8080');
+const ORIGINS = (process.env.ORIGINS || ORIGIN).split(',').map(s => s.trim()).filter(Boolean);
 const RP_NAME = process.env.RP_NAME || 'openGym';
 const ADMIN_UIDS = (process.env.ADMIN_UIDS || '').split(',').map(s => s.trim()).filter(Boolean);
 const INVITE_ONLY = /^(1|true|yes|on)$/i.test(process.env.INVITE_ONLY || '');
@@ -320,7 +321,7 @@ const routes = {
       verification = await verifyRegistrationResponse({
         response: body.credential,
         expectedChallenge: c.challenge,
-        expectedOrigin: ORIGIN,
+        expectedOrigin: ORIGINS,
         expectedRPID: RP_ID,
         requireUserVerification: false
       });
@@ -365,7 +366,7 @@ const routes = {
       verification = await verifyAuthenticationResponse({
         response: body.credential,
         expectedChallenge: c.challenge,
-        expectedOrigin: ORIGIN,
+        expectedOrigin: ORIGINS,
         expectedRPID: RP_ID,
         requireUserVerification: false,
         credential: {
