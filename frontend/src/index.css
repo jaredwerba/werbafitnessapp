@@ -41,10 +41,11 @@
   --yellow:#ffd60a; --teal:#40c8e0; --indigo:#5e5ce6; --pink:#ff375f;
   --purple:#bf5af2; --mint:#63e6e2; --brown:#ac8e68; --grey:#8e8e93;
 
-  /* accent (per-account, synced) */
-  --acc:  var(--green);
-  --acc-2:#248a3d;
-  --on-acc:#000000;
+  /* accent (per-account, synced) — default is the Health In Motion brand blue,
+     the same oklch value nickscalihealth.com uses for --primary */
+  --acc:  oklch(0.58 0.19 200);
+  --acc-2:oklch(0.49 0.17 200);
+  --on-acc:#ffffff;
   --acc-soft: color-mix(in srgb, var(--acc) 16%, transparent);
   --acc-line: color-mix(in srgb, var(--acc) 38%, transparent);
 
@@ -79,11 +80,14 @@
   --blue:#007aff; --green:#34c759; --red:#ff3b30; --orange:#ff9500;
   --yellow:#ffcc00; --teal:#30b0c7; --indigo:#5856d6; --pink:#ff2d55;
   --purple:#af52de; --mint:#00c7be; --brown:#a2845e; --grey:#8e8e93;
-  --acc-2:#248a3d;
+  --acc-2:oklch(0.49 0.17 200);
   --on-acc:#ffffff;
 }
 
-/* accents — Apple's system colours, so a recolour never looks off-system */
+/* accents — Apple's system colours, so a recolour never looks off-system.
+   "motion" is the Health In Motion brand blue — identical to the marketing
+   site's --primary token; sRGB fallback ≈ #0097a6 on non-P3 displays. */
+:root[data-accent="motion"]{ --acc:oklch(0.58 0.19 200); --acc-2:oklch(0.49 0.17 200); --on-acc:#fff }
 :root[data-accent="lime"]  { --acc:var(--green);  --acc-2:#248a3d; --on-acc:#000 }
 :root[data-accent="sky"]   { --acc:var(--blue);   --acc-2:#0060df; --on-acc:#fff }
 :root[data-accent="orange"]{ --acc:var(--orange); --acc-2:#c76b00; --on-acc:#000 }
@@ -100,6 +104,7 @@
    passes and matches the platform convention. */
 :root[data-theme="light"][data-accent="lime"],
 :root[data-theme="light"][data-accent="teal"]  { --on-acc:#000 }
+:root[data-theme="light"][data-accent="motion"],
 :root[data-theme="light"][data-accent="sky"],
 :root[data-theme="light"][data-accent="violet"],
 :root[data-theme="light"][data-accent="pink"],

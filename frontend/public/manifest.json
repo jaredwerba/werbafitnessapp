@@ -1,7 +1,7 @@
 {
-  "name": "openGym",
-  "short_name": "openGym",
-  "description": "Personal gym & body weight tracker",
+  "name": "Health In Motion",
+  "short_name": "In Motion",
+  "description": "Health In Motion — training & body weight tracker",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
