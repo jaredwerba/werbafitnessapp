@@ -74,7 +74,7 @@ export function buildPlanBundle(S, name) {
 export function parsePlan(raw) {
   const data = typeof raw === 'string' ? JSON.parse(raw) : raw
   if (!data || !data.opengym_plan || !Array.isArray(data.routines)) {
-    throw new Error(t('this isn’t an openGym plan file'))
+    throw new Error(t('this isn’t a Health In Motion plan file'))
   }
   const customEx = (Array.isArray(data.customEx) ? data.customEx : []).filter(c => c && c.id)
   const known = new Set(customEx.map(c => c.id))
@@ -217,7 +217,9 @@ export function planPrintHTML(S, owner) {
   }
   .doc { max-width: 720px; margin: 0 auto; }
   header { border-bottom: 2px solid #16181d; padding-bottom: 12px; margin-bottom: 20px; }
-  header .kicker { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #6a7a3a; font-weight: 700; }
+  /* The deep brand blue, not the primary: at 11px this is small text, and #0097a6 scores
+     3.5:1 on white where #007986 scores 5.2:1. */
+  header .kicker { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #007986; font-weight: 700; }
   header h1 { font-size: 27px; letter-spacing: -.02em; margin: 3px 0 0; }
   header .sub { color: #6b7180; font-size: 13px; margin-top: 4px; }
 
@@ -243,15 +245,15 @@ export function planPrintHTML(S, owner) {
   .ex-s { color: #3d424e; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .ex.empty, .none { color: #a2a8b6; }
 
-  .ss { break-inside: avoid; page-break-inside: avoid; border-left: 3px solid #cfe08a; padding-left: 12px; margin: 4px 0; }
-  .ss-tag { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #6a7a3a; font-weight: 700; padding-top: 4px; }
+  .ss { break-inside: avoid; page-break-inside: avoid; border-left: 3px solid #0097a6; padding-left: 12px; margin: 4px 0; }
+  .ss-tag { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #007986; font-weight: 700; padding-top: 4px; }
   .ss .ex:first-of-type { padding-top: 2px; }
 
   footer { margin-top: 26px; padding-top: 10px; border-top: 1px solid #eef0f4; color: #a2a8b6; font-size: 11px; text-align: center; }
 </style></head>
 <body><div class="doc">
   <header>
-    <div class="kicker">openGym</div>
+    <div class="kicker">Health In Motion</div>
     <h1>${esc(t('Weekly Training Plan'))}</h1>
     ${sub ? `<div class="sub">${sub}</div>` : ''}
   </header>
@@ -259,7 +261,7 @@ export function planPrintHTML(S, owner) {
   ${weekHTML(S)}
   <h3 class="block">${esc(t('Routines'))}</h3>
   ${body}
-  <footer>${esc(t('Made with openGym'))} · opengym.duarte-santos.ch</footer>
+  <footer>Health In Motion · nickscalihealth.com/train</footer>
 </div></body></html>`
 }
 

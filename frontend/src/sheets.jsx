@@ -7,7 +7,7 @@ import { lastEntryFor, bestWeightFor, buildSets, effectiveRoutineId, workoutVolu
 import { beep, vibrate } from './lib/sound.js'
 import { t, instrFor, getLang, INSTR_LANGS } from './lib/i18n.js'
 import { nav } from './lib/nav.js'
-import { starterRoutines } from './lib/starter.js'
+import { PROGRAMS, programById, programBundle, dayOfRoutine, dayLine } from './lib/starter.js'
 import Media, { Thumb } from './components/Media.jsx'
 import Stepper from './components/Stepper.jsx'
 import Icon from './components/Icon.jsx'
@@ -42,15 +42,97 @@ export function confirmSheet(opts) {
   ui().openSheet(close => <ConfirmDialog {...opts} close={close} />, { kind: 'center' })
 }
 
-/* ============================ starter plan ============================ */
-export function loadStarterPlan() {
-  const [push, pull, legs] = starterRoutines()
-  update(st => {
-    st.routines.push(push, pull, legs)
-    st.week[1] = push.id; st.week[3] = pull.id; st.week[5] = legs.id
+/* ============================ starter programs ============================ */
+// A program goes in through mergePlan, exactly as a shared plan file does: fresh routine
+// ids, custom exercises deduped against the ones you already have, nothing of yours
+// overwritten. Loading two programs that both want a box jump leaves you one of them.
+export function loadStarterPlan(programId, schedule = true) {
+  const p = programById(programId)
+  if (!p) return
+  const bundle = programBundle(p)
+  const have = new Set(S().routines.map(r => (r.name || '').toLowerCase()))
+  const dup = bundle.routines.some(r => have.has(r.name.toLowerCase()))
+  const go = () => {
+    update(s => mergePlan(s, bundle, { schedule }))
+    toast(t('“{0}” loaded — {1}', p.name, dayLine(bundle.week)))
+    nav('/plan')
+  }
+  // Loading twice used to silently double every routine, with no way to tell the copies apart.
+  if (!dup) return go()
+  confirmSheet({
+    title: t('Load “{0}” again?', p.name),
+    message: t('You already have these sessions. Loading again adds a second copy — nothing you have is changed or removed.'),
+    confirmText: t('Load again'),
+    onConfirm: go,
   })
-  toast(t('Starter plan loaded — Mon Push · Wed Pull · Fri Legs'))
 }
+
+function StarterPrograms({ close }) {
+  const st = useStore(s => s.S)
+  const have = new Set(st.routines.map(r => (r.name || '').toLowerCase()))
+  const row = p => {
+    const b = programBundle(p)
+    const loaded = b.routines.some(r => have.has(r.name.toLowerCase()))
+    return <div key={p.id} className="item" onClick={() => { close(); starterProgramSheet(p.id) }}>
+      <span className="lrow-i"><Icon name={p.glyph} /></span>
+      <div className="grow">
+        <div className="tt">{p.name}</div>
+        <div className="ss" style={{ whiteSpace: 'normal' }}>{t(p.blurb)}</div>
+        <div className="ss dim">{t('{0} sessions', b.routineCount)} · {dayLine(b.week)}</div>
+      </div>
+      {loaded && <span className="tag">{t('loaded')}</span>}
+      <Icon name="chevronRight" className="chev" />
+    </div>
+  }
+  return <>
+    <h3>{t('Choose a program')}</h3>
+    <div className="muted small" style={{ marginBottom: 14 }}>
+      {t('A ready-made week you can train today. Rename, reorder or change anything afterwards.')}
+    </div>
+    <h4 className="sec">{t('Nick’s programs')}</h4>
+    <div className="list">{PROGRAMS.filter(p => !p.general).map(row)}</div>
+    <h4 className="sec">{t('General')}</h4>
+    <div className="list">{PROGRAMS.filter(p => p.general).map(row)}</div>
+  </>
+}
+export const starterPlanSheet = () => ui().openSheet(close => <StarterPrograms close={close} />)
+
+function StarterProgram({ id, close }) {
+  const st = useStore(s => s.S)
+  const p = programById(id)
+  // Replacing a week someone has already built is not something to do by surprise.
+  const [schedule, setSchedule] = useState(!Object.keys(st.week).some(d => st.week[d]))
+  if (!p) return null
+  const b = programBundle(p)
+  return <>
+    <h3>{p.name}</h3>
+    <div className="muted small" style={{ marginBottom: 12, lineHeight: 1.5 }}>{t(p.blurb)}</div>
+    <div className="list">
+      {b.routines.map((r, i) => <div key={r.id} className="item">
+        <span className="lrow-i"><Icon name={glyphOf(r.emoji)} /></span>
+        <div className="grow"><div className="tt">{r.name}</div><div className="ss">{exCount(r.ex.length)}</div></div>
+        {dayOfRoutine(p, i) && <span className="tag acc">{t(dayOfRoutine(p, i))}</span>}
+      </div>)}
+    </div>
+    {b.customEx.length > 0 && <div className="dim small" style={{ margin: '12px 2px 0', lineHeight: 1.4 }}>
+      {t('Adds {0} of Nick’s own exercises to your library.', b.customEx.length)}
+    </div>}
+    <div className="dim small" style={{ margin: '12px 2px 14px', lineHeight: 1.4 }}>
+      {t('These are added as new routines — nothing you already have is changed.')}
+    </div>
+    <div className="row between" style={{ padding: '10px 2px', borderTop: '1px solid var(--sep)', borderBottom: '1px solid var(--sep)', marginBottom: 16, gap: 12 }}>
+      <div>
+        <div className="tt" style={{ fontSize: 15 }}>{t('Use this weekly schedule')}</div>
+        <div className="small dim">{t('Replaces your current Mon–Sun assignments.')}</div>
+      </div>
+      <Switch checked={schedule} onChange={setSchedule} />
+    </div>
+    <Button variant="primary" onClick={() => { close(); loadStarterPlan(p.id, schedule) }}>{t('Add to my plan')}</Button>
+    <div style={{ height: 8 }} />
+    <Button variant="ghost" className="dim" onClick={close}>{t('Cancel')}</Button>
+  </>
+}
+export const starterProgramSheet = id => ui().openSheet(close => <StarterProgram id={id} close={close} />)
 
 /* ============================ weight picker (shared: body weight + goal) ============================ */
 // Fixed range, not a moving window — a window that resizes itself mid-drag (the previous
@@ -634,7 +716,7 @@ function PlanTools({ close }) {
   const exportFile = async () => {
     const bundle = buildPlanBundle(st, user?.name ? t('{0}’s plan', user.name) : '')
     const json = JSON.stringify(bundle, null, 2)
-    const name = 'opengym-plan-' + todayISO() + '.json'
+    const name = 'health-in-motion-plan-' + todayISO() + '.json'
     if (MOBILE) { try { await shareExport(json, name) } catch (e) { /* dismissed */ } close(); return }
     const blob = new Blob([json], { type: 'application/json' })
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); URL.revokeObjectURL(a.href)
@@ -654,7 +736,7 @@ function PlanTools({ close }) {
     <h3>{t('Share your plan')}</h3>
     <div className="muted small" style={{ marginBottom: 16 }}>{t('Send your routines to a friend, or put your week on paper.')}</div>
     <Button variant="primary" icon="upload" onClick={exportFile} disabled={!hasRoutines}>{t('Export plan file')}</Button>
-    <div className="dim small" style={{ margin: '7px 2px 0', lineHeight: 1.4 }}>{t('A small file a friend imports into their own openGym — routines only, none of your workouts or weigh-ins.')}</div>
+    <div className="dim small" style={{ margin: '7px 2px 0', lineHeight: 1.4 }}>{t('A small file a friend imports into their own Health In Motion — routines only, none of your workouts or weigh-ins.')}</div>
     {!MOBILE && <>
       <div style={{ height: 12 }} />
       <Button variant="tinted" icon="download" onClick={() => { close(); printPlan(st, user?.name || '') }} disabled={!hasRoutines}>{t('Print / Save as PDF')}</Button>

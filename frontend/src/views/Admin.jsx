@@ -65,8 +65,11 @@ function UserDetail({ id, onChanged, close }) {
 
 function InvitesCard({ invites, reload }) {
   const toast = useUI(s => s.toast)
-  const gen = () => api('/api/admin/invites/new', { method: 'POST', body: '{}' })
-    .then(({ invite }) => { navigator.clipboard?.writeText(invite.code).catch(() => {}); toast('Code ' + invite.code + ' created & copied'); reload() })
+  // Eight clients means eight identical-looking hex strings otherwise. The server has
+  // always accepted and stored a note; nothing was sending one.
+  const [note, setNote] = useState('')
+  const gen = () => api('/api/admin/invites/new', { method: 'POST', body: JSON.stringify({ note: note.trim() }) })
+    .then(({ invite }) => { navigator.clipboard?.writeText(invite.code).catch(() => {}); setNote(''); toast('Code ' + invite.code + ' created & copied'); reload() })
     .catch(e => toast(e.message))
   const revoke = code => api('/api/admin/invites/revoke', { method: 'POST', body: JSON.stringify({ code }) })
     .then(() => { toast('Code revoked'); reload() }).catch(e => toast(e.message))
@@ -76,13 +79,16 @@ function InvitesCard({ invites, reload }) {
     <div className="row between"><h2 style={{ margin: 0 }}>Invite codes</h2>
       <Button variant="primary" size="sm" onClick={gen} icon="plus">Generate</Button></div>
     <div className="small muted" style={{ margin: '6px 0 10px' }}>{open.length} unused · {used.length} redeemed</div>
+    <input className="input" placeholder="Who is this for? (optional)" maxLength={60} value={note}
+      onChange={e => setNote(e.target.value)} style={{ marginBottom: 10 }} />
     {open.map(i => <div key={i.code} className="row between" style={{ padding: '7px 2px', borderBottom: '1px solid var(--sep)' }}>
       <span style={{ fontFamily: 'ui-monospace,SFMono-Regular,Menlo,monospace', fontWeight: 500, letterSpacing: '.06em' }}
         onClick={() => { navigator.clipboard?.writeText(i.code).catch(() => {}); toast('Copied ' + i.code) }}>{i.code}</span>
+      {i.note && <span className="dim small grow" style={{ padding: '0 10px' }}>{i.note}</span>}
       <button className="iconbtn" style={{ width: 32, height: 30, borderRadius: 8, fontSize: 15, color: 'var(--red)' }} onClick={() => revoke(i.code)} aria-label="revoke"><Icon name="trash" /></button>
     </div>)}
     {used.map(i => <div key={i.code} className="row between dim" style={{ padding: '7px 2px', fontSize: '.8rem' }}>
-      <span style={{ fontFamily: 'monospace' }}>{i.code}</span><span>→ {i.usedByName || 'used'}</span>
+      <span style={{ fontFamily: 'monospace' }}>{i.code}{i.note ? ' · ' + i.note : ''}</span><span>→ {i.usedByName || 'used'}</span>
     </div>)}
     {!open.length && !used.length && <div className="dim small">No codes yet — generate one to invite someone.</div>}
   </div>

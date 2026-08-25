@@ -10,7 +10,7 @@ import { wakeLockSupported } from '../lib/wakelock.js'
 import { t, LANGS, INSTR_LANGS } from '../lib/i18n.js'
 import { DEMO, REPO } from '../lib/demo.js'
 import { MOBILE, shareExport, syncReminder } from '../lib/mobile.js'
-import { loadStarterPlan, confirmSheet, importFromApp } from '../sheets.jsx'
+import { starterPlanSheet, confirmSheet, importFromApp } from '../sheets.jsx'
 import Icon from '../components/Icon.jsx'
 import { Section, Row, SelectRow, Switch, Segmented, Button, TextField } from '../components/ui.jsx'
 
@@ -26,7 +26,7 @@ export default function Settings() {
 
   const doExport = async () => {
     const json = JSON.stringify(S, null, 2)
-    const name = 'opengym-backup-' + todayISO() + '.json'
+    const name = 'health-in-motion-backup-' + todayISO() + '.json'
     // WKWebView can't download blob URLs — the native build hands the file to the share sheet.
     if (MOBILE) {
       try { await shareExport(json, name); toast(t('Backup exported')) } catch (e) { /* share sheet dismissed */ }
@@ -42,7 +42,7 @@ export default function Settings() {
     rd.onload = () => {
       try {
         const data = JSON.parse(rd.result)
-        if (!data.workouts || !data.routines) throw new Error('not an openGym backup')
+        if (!data.workouts || !data.routines) throw new Error(t('not a Health In Motion backup'))
         confirmSheet({ title: t('Import backup?'), message: t('This replaces all current data with the backup file.'), confirmText: t('Import'), danger: true, onConfirm: () => { replaceState(Object.assign(JSON.parse(JSON.stringify(DEF)), data), true); toast(t('Backup imported')) } })
       } catch (e) { toast(t('Import failed: {0}', e.message)) }
     }
@@ -174,7 +174,9 @@ export default function Settings() {
 
     {/* ---------- data: fill it, bring things over, back it up, wipe it ---------- */}
     <Section title={t('Data')}>
-      <Row icon="sparkles" iconTint="var(--acc)" title={t('Load starter plan (PPL)')} accessory="chevron" onClick={loadStarterPlan} />
+      <Row icon="sparkles" iconTint="var(--acc)" title={t('Load a program')}
+        subtitle={t('Run Without Pain, Sprint Faster, Recovery…')}
+        accessory="chevron" onClick={starterPlanSheet} />
       <Row icon="shuffle" iconTint="var(--teal)" title={t('Import from another app')}
         subtitle={t('FitNotes, Strong, Hevy — or body weight from Apple Health')}
         accessory="chevron" onClick={() => importRef.current.click()} />
